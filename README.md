@@ -19,7 +19,7 @@ Antigravity CLI（`agy`）支持 `/fork`、`/rewind` 以及从桌面端导入会
 
 ## 环境要求
 
-- macOS / Linux
+- macOS / Linux （Windows请自行适配，欢迎PR）
 - Python 3.9+
 - Google Antigravity Desktop（如需跨端同步，搭配 `agy` CLI 使用）
 
