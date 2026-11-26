@@ -26,7 +26,7 @@ Antigravity CLI（`agy`）支持 `/fork`、`/rewind` 以及从桌面端导入会
 ## 安装
 
 ```bash
-git clone https://github.com/myprefer/Antigravity-fork-session.git
+git clone https://github.com/Myprefer/Antigravity-fork-session.git
 cd Antigravity-fork-session/
 ./install.sh
 ```
