@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>会话 Fork 管理</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="pane-header">
+      <nav class="nav-tabs" id="viewTabs" role="tablist">
+        <button class="nav-tab" data-view="current" id="tabCurrent">
+          <span>当前会话</span>
+          <span class="tab-count" id="badgeCurrentTurns">0</span>
+        </button>
+        <button class="nav-tab active" data-view="all" id="tabAll">
+          <span>全部会话</span>
+          <span class="tab-count" id="badgeAllCount">0</span>
+        </button>
+        <button class="nav-tab" data-view="backups" id="tabBackups">
+          <span>备份</span>
+          <span class="tab-count" id="badgeBackups">0</span>
+        </button>
+      </nav>
+      <div class="header-right">
+        <button class="icon-btn" id="btnRefresh" title="刷新 (R)" aria-label="刷新">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- View 1: Current Conversation Turns -->
+    <section id="viewCurrent" class="view-panel view-current hidden">
+      <div class="current-header" id="currentSessionBanner"></div>
+      <div id="currentTurnsList" class="turns-list">
+        <div class="empty-state">正在加载当前会话轮次...</div>
+      </div>
+      <div class="bottom-dock">
+        <div class="bottom-dock-inner">
+          <div class="search-wrap">
+            <svg class="icon search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/></svg>
+            <input type="search" id="currentTurnsSearch" class="search-input" placeholder="筛选当前会话的提问或回复..." autocomplete="off" />
+          </div>
+          <button class="btn btn-primary btn-sm" id="btnCurrentFullFork">
+            <svg class="icon" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M6 9v6"/><path d="M18 9c0 6-12 3-12 9"/></svg>
+            <span>完整 Fork</span>
+          </button>
+          <button class="btn btn-ghost btn-sm" id="btnCurrentSyncCli" title="同步到 CLI">同步 CLI</button>
+          <button class="btn btn-ghost btn-sm" id="btnCurrentRename" title="重命名">重命名</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- View 2: All Sessions -->
+    <section id="viewAll" class="view-panel">
+      <div class="filter-bar">
+        <div class="search-wrap">
+          <svg class="icon search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/></svg>
+          <input type="search" id="searchInput" class="search-input" placeholder="搜索会话标题、内容、ID... (/)" autocomplete="off" />
+        </div>
+        <select id="projectFilter" class="select-input" title="按项目筛选">
+          <option value="all">全部项目</option>
+        </select>
+      </div>
+      <div class="subfilter-bar">
+        <div class="segment-group" id="surfaceTabs" role="tablist">
+          <button class="segment active" data-surface="all">全部</button>
+          <button class="segment" data-surface="desktop">桌面端 <span id="statDesktop"></span></button>
+          <button class="segment" data-surface="cli">CLI <span id="statCli"></span></button>
+        </div>
+        <div class="spacer"></div>
+        <label class="check-label">
+          <input type="checkbox" id="chkHideEmpty" checked />
+          <span>隐藏空会话</span>
+        </label>
+        <label class="check-label">
+          <input type="checkbox" id="chkShowSub" />
+          <span>子会话</span>
+        </label>
+      </div>
+      <main class="session-list" id="sessionList">
+        <div class="empty-state">正在加载本地会话...</div>
+      </main>
+    </section>
+
+    <!-- View 3: Backups -->
+    <section id="viewBackups" class="view-panel hidden">
+      <p class="section-hint">覆盖同步前会自动创建旧版本快照，可随时一键还原。</p>
+      <div id="backupsBody"></div>
+    </section>
+  </div>
+
+  <!-- Turn Timeline Drawer -->
+  <div class="drawer-backdrop hidden" id="turnsBackdrop">
+    <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="turnsTitle">
+      <div class="drawer-header">
+        <div class="drawer-title-col">
+          <div class="inline-meta">
+            <span class="tag" id="turnsSurfaceTag"></span>
+            <span class="mono-id" id="turnsConvId" title="点击复制 ID"></span>
+          </div>
+          <h2 id="turnsTitle">会话轮次</h2>
+        </div>
+        <button class="icon-btn" id="btnCloseTurns" aria-label="关闭">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="drawer-toolbar">
+        <div class="search-wrap">
+          <svg class="icon search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/></svg>
+          <input type="search" id="turnsSearch" class="search-input" placeholder="筛选轮次..." />
+        </div>
+        <button class="btn btn-primary btn-sm" id="btnFullForkFromDrawer">完整 Fork</button>
+      </div>
+      <div class="drawer-body" id="turnsBody">
+        <div class="empty-state">正在解析对话轮次...</div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Fork Modal -->
+  <div class="modal-backdrop hidden" id="forkModalBackdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="forkModalTitle">
+      <div class="modal-header">
+        <h3 id="forkModalTitle">Fork 会话</h3>
+        <button class="icon-btn" id="btnCloseForkModal" aria-label="关闭">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <form id="forkForm" class="modal-body">
+        <div class="callout" id="forkSummaryBanner"></div>
+
+        <div class="form-group">
+          <label class="field-label">目标位置</label>
+          <div class="radio-cards">
+            <label class="radio-card">
+              <input type="radio" name="targetSurface" value="desktop" checked />
+              <div>
+                <strong>桌面端</strong>
+                <span>立即同步至左侧边栏</span>
+              </div>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="targetSurface" value="cli" />
+              <div>
+                <strong>CLI (agy)</strong>
+                <span>可在终端恢复继续</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="field-label" for="forkTitleInput">新会话标题</label>
+          <input type="text" id="forkTitleInput" class="text-input" placeholder="留空则沿用原摘要" />
+        </div>
+
+        <div class="form-group">
+          <label class="field-label" for="forkProjectSelect">归属项目</label>
+          <select id="forkProjectSelect" class="select-input full-width"></select>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost btn-sm" id="btnPickTurnInFork">选择历史轮次</button>
+          <div class="spacer"></div>
+          <button type="button" class="btn btn-secondary btn-sm" id="btnCancelFork">取消</button>
+          <button type="submit" class="btn btn-primary btn-sm" id="btnSubmitFork">确认 Fork</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Sync Modal -->
+  <div class="modal-backdrop hidden" id="syncModalBackdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="syncModalTitle">
+      <div class="modal-header">
+        <h3 id="syncModalTitle">同步会话</h3>
+        <button class="icon-btn" id="btnCloseSyncModal" aria-label="关闭">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <form id="syncForm" class="modal-body">
+        <div class="callout" id="syncSummaryBanner"></div>
+        <div class="callout callout-warn hidden" id="syncExistsWarn"></div>
+
+        <div class="form-group">
+          <label class="field-label" for="syncTitleInput">目标端标题（可选）</label>
+          <input type="text" id="syncTitleInput" class="text-input" placeholder="留空保持原样" />
+        </div>
+
+        <div class="form-group">
+          <label class="field-label" for="syncProjectSelect">目标端归属项目</label>
+          <select id="syncProjectSelect" class="select-input full-width"></select>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost btn-sm" id="btnSyncAsFork">改用新 ID Fork</button>
+          <div class="spacer"></div>
+          <button type="button" class="btn btn-secondary btn-sm" id="btnCancelSync">取消</button>
+          <button type="submit" class="btn btn-primary btn-sm" id="btnSubmitSync">确认同步</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Rename Modal -->
+  <div class="modal-backdrop hidden" id="renameModalBackdrop">
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="renameModalTitle">
+      <div class="modal-header">
+        <h3 id="renameModalTitle">重命名会话</h3>
+        <button class="icon-btn" id="btnCloseRenameModal" aria-label="关闭">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <form id="renameForm" class="modal-body">
+        <div class="form-group">
+          <label class="field-label" for="renameTitleInput">标题</label>
+          <input type="text" id="renameTitleInput" class="text-input" required />
+        </div>
+        <div class="modal-footer">
+          <div class="spacer"></div>
+          <button type="button" class="btn btn-secondary btn-sm" id="btnCancelRename">取消</button>
+          <button type="submit" class="btn btn-primary btn-sm">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Result Modal -->
+  <div class="modal-backdrop hidden" id="resultModalBackdrop">
+    <div class="modal modal-sm" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h3 id="resultModalTitle">完成</h3>
+        <button class="icon-btn" id="btnCloseResultModal" aria-label="关闭">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body" id="resultModalBody"></div>
+      <div class="modal-footer" id="resultModalFooter">
+        <div class="spacer"></div>
+        <button type="button" class="btn btn-primary btn-sm" id="btnOkResultModal">好的</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

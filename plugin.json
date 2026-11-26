@@ -1,0 +1,12 @@
+{
+  "name": "agy-session-manager",
+  "displayName": "会话 Fork 管理器",
+  "version": "1.0.0",
+  "description": "在 Antigravity 桌面端侧边栏原生管理桌面端与 CLI 会话：支持当前会话按任意轮次一键 Fork、完整分叉、切换归属项目、CLI 与桌面端互相同步以及自动备份恢复。",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "打开会话 Fork 管理面板，查看当前会话的轮次并分叉",
+    "把最近的 Antigravity CLI 会话导入到桌面端",
+    "从当前对话的某一轮 Fork 一条新的实验分支"
+  ]
+}
