@@ -1,4 +1,4 @@
-# agy-session-manager
+# Antigravity-session-manager
 
 Google Antigravity 桌面端的会话管理 Sidecar 插件，用于在桌面端里直接 Fork 会话（支持按历史轮次截断）以及在桌面端和 CLI（`agy`）之间互相同步会话。
 
