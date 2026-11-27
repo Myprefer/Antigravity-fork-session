@@ -28,7 +28,7 @@ def _sidecar_token() -> str:
 
 
 class SessionManagerHandler(BaseHTTPRequestHandler):
-    server_version = "AgySessionManagerSidecar/1.0"
+    server_version = "AntigravityForkSession/1.0"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         sys.stderr.write(f"[{self.log_date_time_string()}] {fmt % args}\n")
@@ -239,14 +239,14 @@ def resolve_port(cli_port: int | None) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Antigravity Session Manager Sidecar Server")
+    parser = argparse.ArgumentParser(description="Antigravity-fork-session Sidecar Server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args()
 
     port = resolve_port(args.port)
     httpd = ThreadingHTTPServer((args.host, port), SessionManagerHandler)
-    print(f"Antigravity Session Manager Sidecar listening on http://{args.host}:{port}", flush=True)
+    print(f"Antigravity-fork-session Sidecar listening on http://{args.host}:{port}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

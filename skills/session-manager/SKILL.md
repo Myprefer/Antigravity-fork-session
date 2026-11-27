@@ -9,4 +9,4 @@ description: 打开桌面端侧边栏的「会话 Fork 管理」面板，对当�
 
 当用户想要打开会话管理面板、对当前会话按轮次 Fork，或在 CLI 与桌面端之间同步会话时，直接向用户输出以下侧边栏快捷入口（前提是插件已启用）：
 
-[会话 Fork 管理](sidecar://agy-session-manager/session-manager/)
+[会话 Fork 管理](sidecar://antigravity-fork-session/session-manager/)

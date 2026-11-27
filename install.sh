@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_NAME="agy-session-manager"
+PLUGIN_NAME="antigravity-fork-session"
 TARGET_ROOT="${AGY_PLUGINS_DIR:-${HOME}/.gemini/config/plugins}"
 TARGET_DIR="${TARGET_ROOT}/${PLUGIN_NAME}"
 

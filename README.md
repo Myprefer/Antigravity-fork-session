@@ -35,7 +35,7 @@ cd Antigravity-fork-session/
 
 安装后：
 
-1. 在 Antigravity 桌面端打开 **Customizations**，启用 `agy-session-manager` 及其 Sidecar。
+1. 在 Antigravity 桌面端打开 **Customizations**，启用 `Antigravity-fork-session`（`antigravity-fork-session`）及其 Sidecar。
 2. 点击右侧面板右上角的 **`+`**，选择 **「会话 Fork 管理」** 打开。
 
 卸载：
