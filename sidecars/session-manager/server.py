@@ -5,7 +5,9 @@ import argparse
 import json
 import mimetypes
 import os
+import shutil
 import sys
+import tempfile
 import traceback
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -77,13 +79,23 @@ class SessionManagerHandler(BaseHTTPRequestHandler):
             return True
         return parsed.hostname in ("127.0.0.1", "localhost")
 
-    def _read_raw_body(self, max_bytes: int = 256 * 1024 * 1024) -> bytes:
+    def _stream_body_to_file(self, dst_path: Path) -> int:
+        """Stream HTTP request body in 1 MiB chunks directly to disk (no size cap)."""
         length = int(self.headers.get("Content-Length", "0") or "0")
         if length <= 0:
-            return b""
-        if length > max_bytes:
-            raise ValueError("Upload exceeds 256 MB limit")
-        return self.rfile.read(length)
+            dst_path.write_bytes(b"")
+            return 0
+        remaining = length
+        written = 0
+        with open(dst_path, "wb") as out_f:
+            while remaining > 0:
+                chunk = self.rfile.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                out_f.write(chunk)
+                remaining -= len(chunk)
+                written += len(chunk)
+        return written
 
     def _read_json_body(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")
@@ -157,20 +169,23 @@ class SessionManagerHandler(BaseHTTPRequestHandler):
                 surface, conv_id = parts[2], parts[3]
                 inc_raw = (query.get("include_brain", ["1"])[0] or "1").lower()
                 include_brain = inc_raw not in ("0", "false", "no")
-                filename, zip_bytes = core.export_session_bundle(
-                    surface, conv_id, include_brain=include_brain
-                )
-                ascii_fallback = f"session_{conv_id[:8]}.agysess.zip"
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/zip")
-                self.send_header("Content-Length", str(len(zip_bytes)))
-                self.send_header(
-                    "Content-Disposition",
-                    f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}",
-                )
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(zip_bytes)
+                with tempfile.TemporaryDirectory(prefix="agy_dl_") as tmp:
+                    tmp_zip = Path(tmp) / "bundle.zip"
+                    filename, size_bytes = core._write_session_zip(
+                        surface, conv_id, tmp_zip, include_brain=include_brain
+                    )
+                    ascii_fallback = f"session_{conv_id[:8]}.agysess.zip"
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "application/zip")
+                    self.send_header("Content-Length", str(size_bytes))
+                    self.send_header(
+                        "Content-Disposition",
+                        f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}",
+                    )
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    with open(tmp_zip, "rb") as f:
+                        shutil.copyfileobj(f, self.wfile, length=1024 * 1024)
                 return
 
             if path in ("/", "", "/index.html"):
@@ -202,14 +217,15 @@ class SessionManagerHandler(BaseHTTPRequestHandler):
 
         try:
             if path == "/api/import/inspect":
-                raw_bytes = self._read_raw_body()
                 fname = unquote(self.headers.get("X-Filename", "") or (query.get("filename", [""])[0]))
-                res = core.inspect_import_payload(raw_bytes, filename=fname)
+                with tempfile.TemporaryDirectory(prefix="agy_up_ins_") as tmp:
+                    up_path = Path(tmp) / "upload.bin"
+                    self._stream_body_to_file(up_path)
+                    res = core.inspect_import_file(up_path, filename=fname)
                 self._send_json(HTTPStatus.OK, res)
                 return
 
             if path == "/api/import":
-                raw_bytes = self._read_raw_body()
                 target_surface = (query.get("target_surface", ["desktop"])[0] or "desktop").strip()
                 new_id_raw = (query.get("new_id", ["1"])[0] or "1").lower()
                 new_id_mode = new_id_raw not in ("0", "false", "no")
@@ -217,14 +233,17 @@ class SessionManagerHandler(BaseHTTPRequestHandler):
                 overwrite = overwrite_raw in ("1", "true", "yes")
                 project_id = query.get("project_id", ["outside-of-project"])[0] or "outside-of-project"
                 title = query.get("title", [""])[0] or None
-                res = core.import_session_bundle(
-                    raw_bytes=raw_bytes,
-                    target_surface=target_surface,
-                    new_id_mode=new_id_mode,
-                    title=title,
-                    project_id=project_id,
-                    overwrite=overwrite,
-                )
+                with tempfile.TemporaryDirectory(prefix="agy_up_imp_") as tmp:
+                    up_path = Path(tmp) / "upload.bin"
+                    self._stream_body_to_file(up_path)
+                    res = core.import_session_file(
+                        file_path=up_path,
+                        target_surface=target_surface,
+                        new_id_mode=new_id_mode,
+                        title=title,
+                        project_id=project_id,
+                        overwrite=overwrite,
+                    )
                 self._send_json(HTTPStatus.OK, res)
                 return
 

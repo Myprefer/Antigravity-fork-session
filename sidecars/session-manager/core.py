@@ -1459,12 +1459,13 @@ def _validate_sqlite_session_db(db_path: Path) -> Dict[str, Any]:
         con.close()
 
 
-def export_session_bundle(
+def _write_session_zip(
     surface: str,
     conv_id: str,
+    out_zip_path: Path,
     include_brain: bool = True,
-) -> Tuple[str, bytes]:
-    """Export a session as a portable cross-device .agysess.zip archive."""
+) -> Tuple[str, int]:
+    """Stream a session bundle directly to out_zip_path on disk (no RAM buffering)."""
     sdir = validate_surface(surface)
     cid = validate_conv_id(conv_id)
     src_db = sdir / "conversations" / f"{cid}.db"
@@ -1500,8 +1501,10 @@ def export_session_bundle(
         tmp_db = Path(tmp) / "conversation.db"
         snapshot_db(src_db, tmp_db)
 
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        out_zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(
+            out_zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True
+        ) as zf:
             zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             zf.write(tmp_db, "conversation.db")
             if ann_path.exists():
@@ -1515,7 +1518,19 @@ def export_session_bundle(
     slug_src = title or info.get("preview") or cid[:8]
     slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "_", slug_src).strip("_")[:36] or cid[:8]
     filename = f"{slug}_{cid[:8]}.agysess.zip"
-    return filename, buf.getvalue()
+    return filename, out_zip_path.stat().st_size
+
+
+def export_session_bundle(
+    surface: str,
+    conv_id: str,
+    include_brain: bool = True,
+) -> Tuple[str, bytes]:
+    """Export a session as a portable cross-device .agysess.zip archive (bytes)."""
+    with tempfile.TemporaryDirectory(prefix="agy_export_buf_") as tmp:
+        out_zip = Path(tmp) / "bundle.zip"
+        filename, _ = _write_session_zip(surface, conv_id, out_zip, include_brain=include_brain)
+        return filename, out_zip.read_bytes()
 
 
 def default_export_info(surface: str, conv_id: str) -> Dict[str, str]:
@@ -1618,20 +1633,20 @@ def export_session_to_path(
     dest_path: str,
     include_brain: bool = True,
 ) -> Dict[str, Any]:
-    """Export a session bundle directly to a user-chosen path on disk."""
+    """Stream a session bundle directly to a user-chosen path on disk (no size limit)."""
     if not dest_path or not dest_path.strip():
         raise ValueError("Destination path is required")
-    filename, zip_bytes = export_session_bundle(surface, conv_id, include_brain=include_brain)
+    def_info = default_export_info(surface, conv_id)
     target = Path(dest_path.strip()).expanduser()
     if target.exists() and target.is_dir():
-        target = target / filename
+        target = target / def_info["filename"]
     elif not target.name.lower().endswith(".zip"):
         target = target.with_name(target.name + ".agysess.zip")
 
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = target.parent / f".{target.name}.{uuid.uuid4().hex[:8]}.tmp"
     try:
-        tmp_path.write_bytes(zip_bytes)
+        _, size_bytes = _write_session_zip(surface, conv_id, tmp_path, include_brain=include_brain)
         _atomic_move(tmp_path, target)
     except Exception:
         if tmp_path.exists():
@@ -1641,7 +1656,7 @@ def export_session_to_path(
     return {
         "path": str(target),
         "filename": target.name,
-        "size_bytes": len(zip_bytes),
+        "size_bytes": size_bytes,
         "include_brain": include_brain,
     }
 
@@ -1661,21 +1676,24 @@ def reveal_in_file_manager(path_str: str) -> None:
             subprocess.Popen([opener, str(target.parent if target.is_file() else target)])
 
 
-def inspect_import_payload(raw_bytes: bytes, filename: str = "") -> Dict[str, Any]:
-    """Inspect an uploaded .agysess.zip or raw .db file without writing to ~/.gemini."""
-    if not raw_bytes:
+def inspect_import_file(file_path: Path, filename: str = "") -> Dict[str, Any]:
+    """Inspect a .agysess.zip or raw .db file on disk without loading the whole file into RAM."""
+    if not file_path.exists() or file_path.stat().st_size == 0:
         raise ValueError("Empty upload")
+
+    with open(file_path, "rb") as f:
+        header = f.read(16)
 
     with tempfile.TemporaryDirectory(prefix="agy_inspect_") as tmp:
         tmp_dir = Path(tmp)
-        is_zip = raw_bytes[:4] == b"PK\x03\x04" or zipfile.is_zipfile(io.BytesIO(raw_bytes))
+        is_zip = header[:4] == b"PK\x03\x04" or zipfile.is_zipfile(file_path)
 
         manifest: Dict[str, Any] = {}
         has_brain = False
         ann_title = ""
 
         if is_zip:
-            with zipfile.ZipFile(io.BytesIO(raw_bytes), "r") as zf:
+            with zipfile.ZipFile(file_path, "r") as zf:
                 names = zf.namelist()
                 if "conversation.db" not in names:
                     raise ValueError("ZIP archive missing conversation.db")
@@ -1686,14 +1704,15 @@ def inspect_import_payload(raw_bytes: bytes, filename: str = "") -> Dict[str, An
                         manifest = {}
                 if "annotation.pbtxt" in names:
                     ann_tmp = tmp_dir / "annotation.pbtxt"
-                    ann_tmp.write_bytes(zf.read("annotation.pbtxt"))
+                    with zf.open("annotation.pbtxt", "r") as sf, open(ann_tmp, "wb") as df:
+                        shutil.copyfileobj(sf, df)
                     ann_title = parse_annotation_pbtxt(ann_tmp).get("title", "")
                 has_brain = any(n.startswith("brain/") and not n.endswith("/") for n in names)
                 db_path = tmp_dir / "conversation.db"
-                db_path.write_bytes(zf.read("conversation.db"))
-        elif raw_bytes[:16].startswith(b"SQLite format 3"):
-            db_path = tmp_dir / "conversation.db"
-            db_path.write_bytes(raw_bytes)
+                with zf.open("conversation.db", "r") as sf, open(db_path, "wb") as df:
+                    shutil.copyfileobj(sf, df)
+        elif header.startswith(b"SQLite format 3"):
+            db_path = file_path
         else:
             raise ValueError("Unsupported file format: please upload a .agysess.zip bundle or .db file")
 
@@ -1708,7 +1727,7 @@ def inspect_import_payload(raw_bytes: bytes, filename: str = "") -> Dict[str, An
 
     return {
         "format": "zip" if is_zip else "db",
-        "filename": filename,
+        "filename": filename or file_path.name,
         "original_id": orig_id,
         "title": title,
         "preview": manifest.get("preview") or db_meta.get("preview") or "",
@@ -1722,25 +1741,35 @@ def inspect_import_payload(raw_bytes: bytes, filename: str = "") -> Dict[str, An
     }
 
 
-def import_session_bundle(
-    raw_bytes: bytes,
+def inspect_import_payload(raw_bytes: bytes, filename: str = "") -> Dict[str, Any]:
+    """Inspect uploaded bytes by writing to a temp file."""
+    with tempfile.TemporaryDirectory(prefix="agy_inspect_raw_") as tmp:
+        p = Path(tmp) / "upload.bin"
+        p.write_bytes(raw_bytes)
+        return inspect_import_file(p, filename=filename)
+
+
+def import_session_file(
+    file_path: Path,
     target_surface: str = "desktop",
     new_id_mode: bool = True,
     title: Optional[str] = None,
     project_id: Optional[str] = "outside-of-project",
     overwrite: bool = False,
 ) -> Dict[str, Any]:
-    """Import a .agysess.zip bundle or raw .db file into Desktop or CLI."""
-    if not raw_bytes:
+    """Import a .agysess.zip bundle or raw .db file from disk into Desktop or CLI (no size limit)."""
+    if not file_path.exists() or file_path.stat().st_size == 0:
         raise ValueError("Empty upload")
     dst_dir = validate_surface(target_surface)
     proj_map = projects_by_id()
-
     effective_project = project_id if (project_id and project_id in proj_map) else "outside-of-project"
+
+    with open(file_path, "rb") as f:
+        header = f.read(16)
 
     with tempfile.TemporaryDirectory(prefix="agy_import_") as tmp:
         tmp_dir = Path(tmp)
-        is_zip = raw_bytes[:4] == b"PK\x03\x04" or zipfile.is_zipfile(io.BytesIO(raw_bytes))
+        is_zip = header[:4] == b"PK\x03\x04" or zipfile.is_zipfile(file_path)
 
         manifest: Dict[str, Any] = {}
         ann_tmp: Optional[Path] = None
@@ -1748,11 +1777,11 @@ def import_session_bundle(
         has_brain = False
 
         if is_zip:
-            with zipfile.ZipFile(io.BytesIO(raw_bytes), "r") as zf:
-                if "conversation.db" not in zf.namelist():
+            with zipfile.ZipFile(file_path, "r") as zf:
+                names = zf.namelist()
+                if "conversation.db" not in names:
                     raise ValueError("ZIP archive missing conversation.db")
                 for info in zf.infolist():
-                    # Reject symlinks
                     if (info.external_attr >> 16) & 0o170000 == 0o120000:
                         continue
                     rel = _safe_zip_relpath(info.filename)
@@ -1764,19 +1793,21 @@ def import_session_bundle(
                         with zf.open(info, "r") as src_f, open(out_p, "wb") as dst_f:
                             shutil.copyfileobj(src_f, dst_f)
                         has_brain = True
-                if "manifest.json" in zf.namelist():
+                if "manifest.json" in names:
                     try:
                         manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
                     except Exception:
                         manifest = {}
-                if "annotation.pbtxt" in zf.namelist():
+                if "annotation.pbtxt" in names:
                     ann_tmp = tmp_dir / "annotation.pbtxt"
-                    ann_tmp.write_bytes(zf.read("annotation.pbtxt"))
+                    with zf.open("annotation.pbtxt", "r") as sf, open(ann_tmp, "wb") as df:
+                        shutil.copyfileobj(sf, df)
                 staged_db = tmp_dir / "conversation.db"
-                staged_db.write_bytes(zf.read("conversation.db"))
-        elif raw_bytes[:16].startswith(b"SQLite format 3"):
+                with zf.open("conversation.db", "r") as sf, open(staged_db, "wb") as df:
+                    shutil.copyfileobj(sf, df)
+        elif header.startswith(b"SQLite format 3"):
             staged_db = tmp_dir / "conversation.db"
-            staged_db.write_bytes(raw_bytes)
+            shutil.copy2(file_path, staged_db)
         else:
             raise ValueError("Unsupported file format: please upload a .agysess.zip bundle or .db file")
 
@@ -1802,7 +1833,6 @@ def import_session_bundle(
                 )
             backup_meta = create_backup(target_surface, target_id, reason="before_import")
 
-        # Rewrite metadata in staged DB so IDs, source, and project/workspace URIs match THIS device
         con = sqlite3.connect(str(staged_db))
         try:
             target_source_code = 1 if target_surface == "desktop" else 17
@@ -1835,17 +1865,14 @@ def import_session_bundle(
         finally:
             con.close()
 
-        # Install brain directory
         if has_brain and brain_tmp.exists():
             _copy_brain_dir(brain_tmp, dst_dir / "brain" / target_id)
 
-        # Install annotation / title
         ann_title = parse_annotation_pbtxt(ann_tmp).get("title", "") if ann_tmp else ""
         final_title = (title or "").strip() or (manifest.get("title") or "").strip() or ann_title
         if final_title or target_surface == "desktop":
             write_annotation_title(dst_dir, target_id, final_title, touch_view_time=True)
 
-        # Atomic install DB
         _chmod_private(staged_db)
         dst_db.parent.mkdir(parents=True, exist_ok=True)
         for suffix in ("-wal", "-shm"):
@@ -1876,3 +1903,24 @@ def import_session_bundle(
         "conversation_url": f"conversation://{target_id}" if target_surface == "desktop" else None,
         "cli_command": f"agy --conversation {target_id}" if target_surface == "cli" else None,
     }
+
+
+def import_session_bundle(
+    raw_bytes: bytes,
+    target_surface: str = "desktop",
+    new_id_mode: bool = True,
+    title: Optional[str] = None,
+    project_id: Optional[str] = "outside-of-project",
+    overwrite: bool = False,
+) -> Dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="agy_import_raw_") as tmp:
+        p = Path(tmp) / "upload.bin"
+        p.write_bytes(raw_bytes)
+        return import_session_file(
+            p,
+            target_surface=target_surface,
+            new_id_mode=new_id_mode,
+            title=title,
+            project_id=project_id,
+            overwrite=overwrite,
+        )
