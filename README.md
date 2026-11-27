@@ -1,30 +1,34 @@
 # Antigravity-fork-session
 
-Google Antigravity 桌面端的会话管理 Sidecar 插件，用于在桌面端里直接 Fork 会话（支持按历史轮次截断）以及在桌面端和 CLI（`agy`）之间互相同步会话。
+**English** | [简体中文](./README_zh.md)
 
-Antigravity CLI（`agy`）支持 `/fork`、`/rewind` 以及从桌面端导入会话，但 Antigravity 桌面端目前还没有原生提供：
+A Sidecar UI plugin for Google Antigravity Desktop to fork conversations (including per-turn truncation), sync sessions between Desktop and CLI (`agy`), and export/import sessions across devices.
 
-1. **会话 Fork / 从历史某一轮分叉**：长对话里想回到前几轮尝试另一种思路时，没法直接分出新分支，只能重开会话重新贴上下文，或者先切到 CLI 导入再操作。
-2. **直接打开 CLI 会话**：桌面端和 CLI 使用各自独立的本地目录（`~/.gemini/antigravity` 与 `~/.gemini/antigravity-cli`），在 CLI 里继续聊完或分叉出来的会话，无法直接在桌面端侧边栏打开。
+## Why
 
-因为两端底层使用的是同一套 SQLite + protobuf 存储结构，所以写了这个零依赖的 Sidecar 插件，直接把按轮次 Fork 和双端同步集成到桌面端右侧面板里。
+Antigravity CLI (`agy`) supports `/fork`, `/rewind`, and importing conversations from Desktop, while Antigravity Desktop currently lacks native support for:
 
-## 功能
+1. **Conversation forking & per-turn branching**: When you want to branch off an earlier turn in a long session to try a different approach, there is no built-in way to fork from a specific turn without starting over or going through the CLI.
+2. **Opening CLI sessions in Desktop**: Desktop (`~/.gemini/antigravity`) and CLI (`~/.gemini/antigravity-cli`) store sessions in separate local directories, so sessions continued or forked in CLI do not show up in the Desktop sidebar.
 
-- **当前会话按轮次 Fork**：在右侧面板查看当前会话的每轮提问与 Markdown 回复，可从任意一轮之后或之前分叉出新会话。
-- **完整 Fork 与项目切换**：克隆桌面端或 CLI 会话，支持自定义标题、修改归属项目，并直接通知桌面端刷新侧边栏。
-- **Desktop ↔ CLI 同步**：把 `~/.gemini/antigravity-cli` 中的 CLI 会话导入桌面端，或将桌面端会话同步到 CLI。
-- **跨设备导出与导入**：将任意会话打包导出为 `.agysess.zip`（含完整数据库快照、标题与脑图附件），在另一台 macOS / Linux / Windows 设备的面板中直接导入（也支持直接导入原始 `.db` 文件），自动重写本机项目归属与会话 ID。
-- **自动备份与还原**：覆盖同步或覆盖导入前自动备份旧版本，可在「备份」标签页恢复。
-- **零依赖**：后端仅使用 Python 3.9+ 标准库，前端为原生 HTML/CSS/JS，跟随 Antigravity 浅色/深色主题。
+Because both clients share the same underlying SQLite + protobuf storage format, this zero-dependency Sidecar plugin brings per-turn forking, Desktop ↔ CLI sync, and cross-device transfer directly into the Desktop side pane.
 
-## 环境要求
+## Features
+
+- **Per-turn Fork**: View every turn (prompts + rendered Markdown replies) of the active conversation in the side pane and fork right after or before any turn.
+- **Full Fork & Project Switching**: Clone any Desktop or CLI session with a fresh UUID, custom title, and target project, then notify Desktop's `ConversationService` so it appears immediately in the sidebar.
+- **Desktop ↔ CLI Sync**: Import CLI sessions from `~/.gemini/antigravity-cli` into Desktop, or sync Desktop sessions to CLI.
+- **Cross-device Export & Import**: Export any session to a portable `.agysess.zip` bundle via a native OS Save-As dialog (with optional `brain/` attachments), and import `.agysess.zip` or raw `.db` files on another macOS / Linux / Windows machine with automatic ID and project reassignment.
+- **Auto-backup & Restore**: Automatically snapshots existing sessions before any overwrite, with one-click restore in the **Backups** tab.
+- **Zero Dependencies**: Pure Python 3.9+ standard library backend + vanilla HTML/CSS/JS frontend, synced with Antigravity's light/dark theme.
+
+## Requirements
 
 - macOS / Linux / Windows
 - Python 3.9+
-- Google Antigravity Desktop（如需跨端同步，搭配 `agy` CLI 使用）
+- Google Antigravity Desktop (optionally with `agy` CLI for cross-surface sync)
 
-## 安装
+## Installation
 
 ### macOS / Linux
 
@@ -34,7 +38,7 @@ cd Antigravity-fork-session
 ./install.sh
 ```
 
-开发者可以使用 `./install.sh --symlink` 进行软链接安装。卸载：`./uninstall.sh`。
+For development, use `./install.sh --symlink`. To uninstall: `./uninstall.sh`.
 
 ### Windows (PowerShell)
 
@@ -44,34 +48,34 @@ cd Antigravity-fork-session
 .\install.ps1
 ```
 
-`install.ps1` 会自动检测本机 Python 3.9+ 路径并写入插件的 `sidecar.json`。卸载：`.\uninstall.ps1`。
+`install.ps1` automatically detects Python 3.9+ on your machine and writes its path into the installed `sidecar.json`. To uninstall: `.\uninstall.ps1`.
 
-安装后：
+### Enable in Antigravity Desktop
 
-1. 在 Antigravity 桌面端打开 **Customizations**，启用 `Antigravity-fork-session`（`antigravity-fork-session`）及其 Sidecar。
-2. 点击右侧面板右上角的 **`+`**，选择 **「会话 Fork 管理」** 打开。
+1. Open **Customizations** in Antigravity Desktop and enable `Antigravity-fork-session` (`antigravity-fork-session`) along with its Sidecar.
+2. Click **`+`** in the top-right corner of the right-hand side pane and select **会话 Fork 管理**.
 
-## 独立运行（不安装插件）
+## Standalone Mode (Without Installing the Plugin)
 
 ```bash
 python3 sidecars/session-manager/server.py --port 18765
 ```
 
-在浏览器访问 `http://127.0.0.1:18765` 即可。
+Then open `http://127.0.0.1:18765` in your browser.
 
-## 可选环境变量
+## Environment Variables
 
-| 变量 | 说明 | 默认值 |
+| Variable | Description | Default |
 | --- | --- | --- |
-| `AGY_DESKTOP_DIR` | 桌面端数据目录 | `~/.gemini/antigravity` |
-| `AGY_CLI_DIR` | CLI 数据目录 | `~/.gemini/antigravity-cli` |
-| `AGY_MANAGER_PORT` | 独立运行端口 | `18766` |
+| `AGY_DESKTOP_DIR` | Antigravity Desktop data directory | `~/.gemini/antigravity` |
+| `AGY_CLI_DIR` | Antigravity CLI data directory | `~/.gemini/antigravity-cli` |
+| `AGY_MANAGER_PORT` | Port when running standalone | `18766` |
 
-## 说明
+## Notes
 
-- 服务仅监听 `127.0.0.1`，不对外暴露。
-- Fork 与同步使用 SQLite `.backup()` 在暂存目录完成处理后原子替换，不直接修改原会话数据库。
-- 本项目依赖 Antigravity 本地 SQLite 与 protobuf 存储结构，如后续官方版本调整本地格式，可能需要同步适配。
+- The local server binds strictly to `127.0.0.1`.
+- Fork, sync, and import operations use SQLite's online `.backup()` in a staging directory and replace files atomically without modifying source databases.
+- This project reads and writes Antigravity's local SQLite and protobuf storage format; future upstream storage changes may require updates.
 
 ## License
 
