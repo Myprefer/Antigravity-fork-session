@@ -368,7 +368,7 @@
           ? `<div class="turn-reply md-body${isLong ? ' collapsed' : ''}">${renderMarkdown(rawReply)}</div>${isLong ? '<button type="button" class="expand-btn" data-toggle-expand>展开全文</button>' : ''}`
           : '';
         return `
-          <div class="turn-item">
+          <div class="turn-item" data-turn-num="${t.turn_number}">
             <div class="turn-user-row">
               <div class="turn-user-bubble">${esc(t.user_text || '(空提示词)')}</div>
             </div>
@@ -387,8 +387,57 @@
       .join('');
   }
 
+  function renderTurnRail(turns) {
+    const rail = $('turnRail');
+    const tip = $('turnRailTooltip');
+    tip.classList.add('hidden');
+    if (!turns || turns.length < 2) {
+      rail.classList.add('hidden');
+      rail.innerHTML = '';
+      return;
+    }
+    rail.classList.remove('hidden');
+    rail.innerHTML = turns
+      .map(
+        (t) =>
+          `<button type="button" class="turn-dot-btn" data-rail-turn="${t.turn_number}" aria-label="跳转到第 ${t.turn_number} 轮"><span class="turn-dot"></span></button>`
+      )
+      .join('');
+    updateActiveRailDot();
+  }
+
+  function updateActiveRailDot() {
+    if (state.activeView !== 'current') return;
+    const rail = $('turnRail');
+    if (rail.classList.contains('hidden')) return;
+    const items = $('currentTurnsList').querySelectorAll('.turn-item[data-turn-num]');
+    if (!items.length) return;
+    const anchorY = 110;
+    let activeNum = items[0].dataset.turnNum;
+    for (const el of items) {
+      const rect = el.getBoundingClientRect();
+      if (rect.top <= anchorY) {
+        activeNum = el.dataset.turnNum;
+      } else {
+        break;
+      }
+    }
+    // If scrolled to very bottom, highlight last turn
+    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 16) {
+      activeNum = items[items.length - 1].dataset.turnNum;
+    }
+    rail.querySelectorAll('.turn-dot-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.railTurn === activeNum);
+    });
+  }
+
   function renderCurrentTurns() {
+    const q = ($('currentTurnsSearch').value || '').trim().toLowerCase();
+    const visible = state.currentTurns.filter(
+      (t) => !q || `${t.user_text} ${t.assistant_text || t.assistant_preview}`.toLowerCase().includes(q)
+    );
     renderTurnCards(state.currentTurns, $('currentTurnsSearch').value, $('currentTurnsList'));
+    renderTurnRail(visible);
   }
 
   function populateProjectFilter() {
@@ -1011,6 +1060,59 @@
   });
 
   $('currentTurnsSearch').addEventListener('input', renderCurrentTurns);
+
+  // Turn navigator rail hover preview & click-to-jump
+  $('turnRail').addEventListener('mouseover', (e) => {
+    const btn = e.target.closest('.turn-dot-btn');
+    if (!btn) return;
+    const tnum = Number(btn.dataset.railTurn);
+    const turn = state.currentTurns.find((t) => t.turn_number === tnum);
+    if (!turn) return;
+    const tip = $('turnRailTooltip');
+    tip.innerHTML = `
+      <div class="rail-tip-head">
+        <strong>第 ${turn.turn_number} 轮</strong>
+        <span>${turn.timestamp ? formatRelTime(turn.timestamp) : `${turn.step_count} 步`}</span>
+      </div>
+      <div class="rail-tip-user">${esc(turn.user_preview || turn.user_text || '(空提示词)')}</div>
+      ${turn.assistant_preview ? `<div class="rail-tip-reply">${esc(turn.assistant_preview)}</div>` : ''}
+    `;
+    tip.classList.remove('hidden');
+    const rect = btn.getBoundingClientRect();
+    const tipH = tip.offsetHeight || 84;
+    const top = Math.max(48, Math.min(window.innerHeight - tipH - 64, rect.top + rect.height / 2 - tipH / 2));
+    tip.style.top = `${top}px`;
+  });
+
+  $('turnRail').addEventListener('mouseleave', () => {
+    $('turnRailTooltip').classList.add('hidden');
+  });
+
+  $('turnRail').addEventListener('click', (e) => {
+    const btn = e.target.closest('.turn-dot-btn');
+    if (!btn) return;
+    const tnum = btn.dataset.railTurn;
+    const target = $('currentTurnsList').querySelector(`.turn-item[data-turn-num="${tnum}"]`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    target.classList.remove('jump-flash');
+    void target.offsetWidth;
+    target.classList.add('jump-flash');
+    setTimeout(() => target.classList.remove('jump-flash'), 900);
+  });
+
+  let railScrollRaf = 0;
+  window.addEventListener(
+    'scroll',
+    () => {
+      if (railScrollRaf) return;
+      railScrollRaf = requestAnimationFrame(() => {
+        railScrollRaf = 0;
+        updateActiveRailDot();
+      });
+    },
+    { passive: true }
+  );
   $('btnCurrentFullFork').addEventListener('click', () => {
     const cur = findSession('desktop', state.currentConvId);
     if (cur) openForkModal(cur, { targetSurface: 'desktop' });
