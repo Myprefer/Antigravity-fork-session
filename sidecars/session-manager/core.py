@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import io
 import json
 import os
+import platform
 import re
 import shutil
 import sqlite3
+import tempfile
 import time
 import urllib.error
 import urllib.request
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -300,6 +304,27 @@ def validate_conv_id(conv_id: str) -> str:
     return conv_id.lower()
 
 
+def _sqlite_ro_uri(db_path: Path) -> str:
+    return f"{db_path.resolve().as_uri()}?mode=ro&immutable=1"
+
+
+def _chmod_private(path: Path) -> None:
+    if os.name != "nt":
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+
+def _atomic_move(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.replace(src, dst)
+    except OSError:
+        # Fallback for cross-drive moves (common on Windows or separate partitions)
+        shutil.move(str(src), str(dst))
+
+
 def open_db_readonly(db_path: Path) -> sqlite3.Connection:
     """Open a SQLite DB read-only without corrupting or creating stray WAL/SHM files."""
     wal_path = Path(str(db_path) + "-wal")
@@ -308,7 +333,7 @@ def open_db_readonly(db_path: Path) -> sqlite3.Connection:
         con.execute("PRAGMA query_only = ON")
         return con
     try:
-        return sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True, timeout=5.0)
+        return sqlite3.connect(_sqlite_ro_uri(db_path), uri=True, timeout=5.0)
     except sqlite3.OperationalError:
         con = sqlite3.connect(str(db_path), timeout=5.0)
         con.execute("PRAGMA query_only = ON")
@@ -325,7 +350,7 @@ def snapshot_db(src_db: Path, dst_db: Path) -> None:
         src_con = sqlite3.connect(str(src_db), timeout=10.0)
     else:
         try:
-            src_con = sqlite3.connect(f"file:{src_db}?mode=ro&immutable=1", uri=True, timeout=10.0)
+            src_con = sqlite3.connect(_sqlite_ro_uri(src_db), uri=True, timeout=10.0)
         except sqlite3.OperationalError:
             src_con = sqlite3.connect(str(src_db), timeout=10.0)
     dst_con = sqlite3.connect(str(dst_db))
@@ -1054,7 +1079,7 @@ def restore_backup(backup_name: str) -> Dict[str, Any]:
     STAGING_DIR.mkdir(parents=True, exist_ok=True)
     staged_db = STAGING_DIR / f"restore_{cid}.db"
     shutil.copy2(b_db, staged_db)
-    os.chmod(staged_db, 0o600)
+    _chmod_private(staged_db)
 
     dst_db = sdir / "conversations" / f"{cid}.db"
     dst_db.parent.mkdir(parents=True, exist_ok=True)
@@ -1066,7 +1091,7 @@ def restore_backup(backup_name: str) -> Dict[str, Any]:
                 w.unlink()
             except OSError:
                 pass
-    os.replace(staged_db, dst_db)
+    _atomic_move(staged_db, dst_db)
 
     b_ann = bdir / f"{cid}.pbtxt"
     if b_ann.exists():
@@ -1234,10 +1259,10 @@ def fork_session(
             write_annotation_title(dst_dir, new_id, final_title, touch_view_time=True)
 
         # Atomic move into target conversations directory
-        os.chmod(staged_db, 0o600)
+        _chmod_private(staged_db)
         dst_conv_dir = dst_dir / "conversations"
         dst_conv_dir.mkdir(parents=True, exist_ok=True)
-        os.replace(staged_db, dst_conv_dir / f"{new_id}.db")
+        _atomic_move(staged_db, dst_conv_dir / f"{new_id}.db")
 
         # Clean up any staging WAL/SHM
         for suffix in ("-wal", "-shm"):
@@ -1341,7 +1366,7 @@ def sync_session_exact(
                 (dst_dir / "annotations").mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_ann, dst_dir / "annotations" / f"{cid}.pbtxt")
 
-        os.chmod(staged_db, 0o600)
+        _chmod_private(staged_db)
         dst_db.parent.mkdir(parents=True, exist_ok=True)
         for suffix in ("-wal", "-shm"):
             w = Path(str(dst_db) + suffix)
@@ -1350,7 +1375,7 @@ def sync_session_exact(
                     w.unlink()
                 except OSError:
                     pass
-        os.replace(staged_db, dst_db)
+        _atomic_move(staged_db, dst_db)
     except Exception:
         if staged_db.exists():
             staged_db.unlink()
@@ -1383,3 +1408,327 @@ def rename_session(surface: str, conv_id: str, title: str) -> Dict[str, Any]:
     if surface == "desktop":
         desktop_notified = notify_desktop_ls(cid, title.strip())
     return {"id": cid, "surface": surface, "title": title.strip(), "desktop_notified": desktop_notified}
+
+
+# ---------------------------------------------------------------------------
+# Cross-device Export & Import (.agysess.zip or raw .db)
+# ---------------------------------------------------------------------------
+
+
+def _safe_zip_relpath(member_name: str) -> Optional[Path]:
+    """Validate a zip entry path against Zip-Slip traversal and absolute paths."""
+    norm = member_name.replace("\\", "/")
+    if not norm or norm.startswith("/") or norm.endswith("/"):
+        return None
+    parts = [p for p in norm.split("/") if p]
+    if not parts or any(p in (".", "..") or ":" in p for p in parts):
+        return None
+    return Path(*parts)
+
+
+def _validate_sqlite_session_db(db_path: Path) -> Dict[str, Any]:
+    """Verify db_path is a valid Antigravity conversation SQLite DB and return summary info."""
+    con = open_db_readonly(db_path)
+    try:
+        tables = {
+            r[0]
+            for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        if "trajectory_meta" not in tables or "steps" not in tables:
+            raise ValueError("Not a valid Antigravity conversation database (missing required tables)")
+        meta = con.execute(
+            "SELECT trajectory_id, cascade_id, trajectory_type, source FROM trajectory_meta LIMIT 1"
+        ).fetchone()
+        if not meta:
+            raise ValueError("Conversation database has empty trajectory_meta")
+        step_count = int(con.execute("SELECT count(*) FROM steps").fetchone()[0])
+        first_u = con.execute(
+            "SELECT step_payload FROM steps WHERE step_type = 14 ORDER BY idx ASC LIMIT 1"
+        ).fetchone()
+        preview = _extract_user_text_from_payload(first_u[0])[:200] if (first_u and first_u[0]) else ""
+        return {
+            "trajectory_id": meta[0] or "",
+            "cascade_id": meta[1] or "",
+            "trajectory_type": int(meta[2] or 4),
+            "source_code": int(meta[3] or 1),
+            "step_count": step_count,
+            "preview": re.sub(r"\s+", " ", preview).strip(),
+        }
+    finally:
+        con.close()
+
+
+def export_session_bundle(
+    surface: str,
+    conv_id: str,
+    include_brain: bool = True,
+) -> Tuple[str, bytes]:
+    """Export a session as a portable cross-device .agysess.zip archive."""
+    sdir = validate_surface(surface)
+    cid = validate_conv_id(conv_id)
+    src_db = sdir / "conversations" / f"{cid}.db"
+    if not src_db.exists():
+        raise FileNotFoundError(f"Session {cid} not found in {surface}")
+
+    ann_path = sdir / "annotations" / f"{cid}.pbtxt"
+    ann = parse_annotation_pbtxt(ann_path) if ann_path.exists() else {}
+    info = _read_db_quick_info(src_db)
+    proj_map = projects_by_id()
+    pid = info.get("project_id") or "outside-of-project"
+    pname = proj_map[pid]["name"] if pid in proj_map else pid
+    title = ann.get("title") or ""
+    brain_dir = sdir / "brain" / cid
+    has_brain = bool(include_brain and brain_dir.exists())
+
+    manifest = {
+        "format": "antigravity-fork-session-bundle",
+        "format_version": 1,
+        "exported_at": datetime.now(tz=timezone.utc).isoformat(),
+        "source_os": platform.system().lower(),
+        "source_surface": surface,
+        "conversation_id": cid,
+        "title": title,
+        "preview": re.sub(r"\s+", " ", info.get("preview") or "").strip()[:200],
+        "project_id": pid,
+        "project_name": pname,
+        "step_count": info.get("step_count", 0),
+        "has_brain": has_brain,
+    }
+
+    with tempfile.TemporaryDirectory(prefix="agy_export_") as tmp:
+        tmp_db = Path(tmp) / "conversation.db"
+        snapshot_db(src_db, tmp_db)
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            zf.write(tmp_db, "conversation.db")
+            if ann_path.exists():
+                zf.write(ann_path, "annotation.pbtxt")
+            if has_brain:
+                for item in brain_dir.rglob("*"):
+                    if item.is_file() and not item.name.endswith(".lock"):
+                        rel = item.relative_to(brain_dir).as_posix()
+                        zf.write(item, f"brain/{rel}")
+
+    slug_src = title or info.get("preview") or cid[:8]
+    slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "_", slug_src).strip("_")[:36] or cid[:8]
+    filename = f"{slug}_{cid[:8]}.agysess.zip"
+    return filename, buf.getvalue()
+
+
+def inspect_import_payload(raw_bytes: bytes, filename: str = "") -> Dict[str, Any]:
+    """Inspect an uploaded .agysess.zip or raw .db file without writing to ~/.gemini."""
+    if not raw_bytes:
+        raise ValueError("Empty upload")
+
+    with tempfile.TemporaryDirectory(prefix="agy_inspect_") as tmp:
+        tmp_dir = Path(tmp)
+        is_zip = raw_bytes[:4] == b"PK\x03\x04" or zipfile.is_zipfile(io.BytesIO(raw_bytes))
+
+        manifest: Dict[str, Any] = {}
+        has_brain = False
+        ann_title = ""
+
+        if is_zip:
+            with zipfile.ZipFile(io.BytesIO(raw_bytes), "r") as zf:
+                names = zf.namelist()
+                if "conversation.db" not in names:
+                    raise ValueError("ZIP archive missing conversation.db")
+                if "manifest.json" in names:
+                    try:
+                        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+                    except Exception:
+                        manifest = {}
+                if "annotation.pbtxt" in names:
+                    ann_tmp = tmp_dir / "annotation.pbtxt"
+                    ann_tmp.write_bytes(zf.read("annotation.pbtxt"))
+                    ann_title = parse_annotation_pbtxt(ann_tmp).get("title", "")
+                has_brain = any(n.startswith("brain/") and not n.endswith("/") for n in names)
+                db_path = tmp_dir / "conversation.db"
+                db_path.write_bytes(zf.read("conversation.db"))
+        elif raw_bytes[:16].startswith(b"SQLite format 3"):
+            db_path = tmp_dir / "conversation.db"
+            db_path.write_bytes(raw_bytes)
+        else:
+            raise ValueError("Unsupported file format: please upload a .agysess.zip bundle or .db file")
+
+        db_meta = _validate_sqlite_session_db(db_path)
+
+    orig_id = (manifest.get("conversation_id") or db_meta.get("cascade_id") or "").lower()
+    if not UUID_RE.match(orig_id):
+        orig_id = ""
+    title = manifest.get("title") or ann_title or ""
+    exists_desktop = bool(orig_id and (SURFACES["desktop"] / "conversations" / f"{orig_id}.db").exists())
+    exists_cli = bool(orig_id and (SURFACES["cli"] / "conversations" / f"{orig_id}.db").exists())
+
+    return {
+        "format": "zip" if is_zip else "db",
+        "filename": filename,
+        "original_id": orig_id,
+        "title": title,
+        "preview": manifest.get("preview") or db_meta.get("preview") or "",
+        "step_count": db_meta["step_count"],
+        "source_surface": manifest.get("source_surface") or ("cli" if db_meta["source_code"] == 17 else "desktop"),
+        "source_os": manifest.get("source_os") or "unknown",
+        "source_project_name": manifest.get("project_name") or "",
+        "has_brain": has_brain,
+        "exists_in_desktop": exists_desktop,
+        "exists_in_cli": exists_cli,
+    }
+
+
+def import_session_bundle(
+    raw_bytes: bytes,
+    target_surface: str = "desktop",
+    new_id_mode: bool = True,
+    title: Optional[str] = None,
+    project_id: Optional[str] = "outside-of-project",
+    overwrite: bool = False,
+) -> Dict[str, Any]:
+    """Import a .agysess.zip bundle or raw .db file into Desktop or CLI."""
+    if not raw_bytes:
+        raise ValueError("Empty upload")
+    dst_dir = validate_surface(target_surface)
+    proj_map = projects_by_id()
+
+    effective_project = project_id if (project_id and project_id in proj_map) else "outside-of-project"
+
+    with tempfile.TemporaryDirectory(prefix="agy_import_") as tmp:
+        tmp_dir = Path(tmp)
+        is_zip = raw_bytes[:4] == b"PK\x03\x04" or zipfile.is_zipfile(io.BytesIO(raw_bytes))
+
+        manifest: Dict[str, Any] = {}
+        ann_tmp: Optional[Path] = None
+        brain_tmp = tmp_dir / "brain"
+        has_brain = False
+
+        if is_zip:
+            with zipfile.ZipFile(io.BytesIO(raw_bytes), "r") as zf:
+                if "conversation.db" not in zf.namelist():
+                    raise ValueError("ZIP archive missing conversation.db")
+                for info in zf.infolist():
+                    # Reject symlinks
+                    if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                        continue
+                    rel = _safe_zip_relpath(info.filename)
+                    if rel is None:
+                        continue
+                    if rel.parts[0] == "brain" and len(rel.parts) > 1:
+                        out_p = brain_tmp / Path(*rel.parts[1:])
+                        out_p.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(info, "r") as src_f, open(out_p, "wb") as dst_f:
+                            shutil.copyfileobj(src_f, dst_f)
+                        has_brain = True
+                if "manifest.json" in zf.namelist():
+                    try:
+                        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+                    except Exception:
+                        manifest = {}
+                if "annotation.pbtxt" in zf.namelist():
+                    ann_tmp = tmp_dir / "annotation.pbtxt"
+                    ann_tmp.write_bytes(zf.read("annotation.pbtxt"))
+                staged_db = tmp_dir / "conversation.db"
+                staged_db.write_bytes(zf.read("conversation.db"))
+        elif raw_bytes[:16].startswith(b"SQLite format 3"):
+            staged_db = tmp_dir / "conversation.db"
+            staged_db.write_bytes(raw_bytes)
+        else:
+            raise ValueError("Unsupported file format: please upload a .agysess.zip bundle or .db file")
+
+        db_meta = _validate_sqlite_session_db(staged_db)
+        orig_cid = (manifest.get("conversation_id") or db_meta.get("cascade_id") or "").lower()
+        orig_traj_id = db_meta["trajectory_id"]
+
+        if new_id_mode or not UUID_RE.match(orig_cid):
+            target_id = str(uuid.uuid4())
+            target_traj_id = str(uuid.uuid4())
+            target_sess_id = str(uuid.uuid4())
+        else:
+            target_id = orig_cid
+            target_traj_id = orig_traj_id or str(uuid.uuid4())
+            target_sess_id = ""
+
+        dst_db = dst_dir / "conversations" / f"{target_id}.db"
+        backup_meta = None
+        if dst_db.exists():
+            if not overwrite:
+                raise FileExistsError(
+                    f"Session {target_id} already exists in {target_surface}. Enable overwrite or allocate a new ID."
+                )
+            backup_meta = create_backup(target_surface, target_id, reason="before_import")
+
+        # Rewrite metadata in staged DB so IDs, source, and project/workspace URIs match THIS device
+        con = sqlite3.connect(str(staged_db))
+        try:
+            target_source_code = 1 if target_surface == "desktop" else 17
+            con.execute(
+                "UPDATE trajectory_meta SET trajectory_id = ?, cascade_id = ?, source = ?",
+                (target_traj_id, target_id, target_source_code),
+            )
+            blob_row = con.execute(
+                "SELECT data FROM trajectory_metadata_blob WHERE id='main' LIMIT 1"
+            ).fetchone()
+            if blob_row and blob_row[0]:
+                new_blob = _rewrite_metadata_blob(
+                    blob_row[0],
+                    new_cid=target_id,
+                    new_sess_id=target_sess_id,
+                    target_surface=target_surface,
+                    target_project_id=effective_project,
+                    proj_map=proj_map,
+                    update_timestamp=new_id_mode,
+                )
+                con.execute(
+                    "UPDATE trajectory_metadata_blob SET data = ? WHERE id='main'",
+                    (new_blob,),
+                )
+            con.commit()
+            try:
+                con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.OperationalError:
+                pass
+        finally:
+            con.close()
+
+        # Install brain directory
+        if has_brain and brain_tmp.exists():
+            _copy_brain_dir(brain_tmp, dst_dir / "brain" / target_id)
+
+        # Install annotation / title
+        ann_title = parse_annotation_pbtxt(ann_tmp).get("title", "") if ann_tmp else ""
+        final_title = (title or "").strip() or (manifest.get("title") or "").strip() or ann_title
+        if final_title or target_surface == "desktop":
+            write_annotation_title(dst_dir, target_id, final_title, touch_view_time=True)
+
+        # Atomic install DB
+        _chmod_private(staged_db)
+        dst_db.parent.mkdir(parents=True, exist_ok=True)
+        for suffix in ("-wal", "-shm"):
+            w = Path(str(dst_db) + suffix)
+            if w.exists():
+                try:
+                    w.unlink()
+                except OSError:
+                    pass
+        _atomic_move(staged_db, dst_db)
+
+    desktop_notified = False
+    if target_surface == "desktop":
+        desktop_notified = notify_desktop_ls(target_id, final_title or None)
+
+    return {
+        "id": target_id,
+        "new_id": target_id,
+        "original_id": orig_cid,
+        "target_surface": target_surface,
+        "project_id": effective_project,
+        "title": final_title,
+        "step_count": db_meta["step_count"],
+        "has_brain": has_brain,
+        "overwrote": backup_meta is not None,
+        "backup": backup_meta,
+        "desktop_notified": desktop_notified,
+        "conversation_url": f"conversation://{target_id}" if target_surface == "desktop" else None,
+        "cli_command": f"agy --conversation {target_id}" if target_surface == "cli" else None,
+    }

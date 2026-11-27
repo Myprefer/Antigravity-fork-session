@@ -24,6 +24,10 @@
         </button>
       </nav>
       <div class="header-right">
+        <button class="btn btn-ghost btn-sm" id="btnOpenImport" title="从其他设备导入会话 (.agysess.zip / .db)">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <span>导入</span>
+        </button>
         <button class="icon-btn" id="btnRefresh" title="刷新 (R)" aria-label="刷新">
           <svg class="icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
         </button>
@@ -47,6 +51,7 @@
             <span>完整 Fork</span>
           </button>
           <button class="btn btn-ghost btn-sm" id="btnCurrentSyncCli" title="同步到 CLI">同步 CLI</button>
+          <button class="btn btn-ghost btn-sm" id="btnCurrentExport" title="导出为可跨设备迁移的会话包">导出</button>
           <button class="btn btn-ghost btn-sm" id="btnCurrentRename" title="重命名">重命名</button>
         </div>
       </div>
@@ -222,6 +227,83 @@
           <div class="spacer"></div>
           <button type="button" class="btn btn-secondary btn-sm" id="btnCancelRename">取消</button>
           <button type="submit" class="btn btn-primary btn-sm">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Import Modal (cross-device .agysess.zip / .db) -->
+  <div class="modal-backdrop hidden" id="importModalBackdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
+      <div class="modal-header">
+        <h3 id="importModalTitle">导入会话（跨设备）</h3>
+        <button class="icon-btn" id="btnCloseImportModal" aria-label="关闭">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <form id="importForm" class="modal-body">
+        <div class="dropzone" id="importDropzone">
+          <input type="file" id="importFileInput" accept=".zip,.db" class="hidden" />
+          <div class="dropzone-text" id="importDropzoneText">点击选择或拖入 <code>.agysess.zip</code> / <code>.db</code> 文件</div>
+        </div>
+
+        <div class="callout hidden" id="importInspectBanner"></div>
+        <div class="callout callout-warn hidden" id="importExistsWarn"></div>
+
+        <div class="form-group">
+          <label class="field-label">导入到</label>
+          <div class="radio-cards">
+            <label class="radio-card">
+              <input type="radio" name="importTargetSurface" value="desktop" checked />
+              <div>
+                <strong>桌面端</strong>
+                <span>立即同步至左侧边栏</span>
+              </div>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="importTargetSurface" value="cli" />
+              <div>
+                <strong>CLI (agy)</strong>
+                <span>可在终端恢复继续</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="field-label">会话 ID 处理</label>
+          <div class="radio-cards">
+            <label class="radio-card">
+              <input type="radio" name="importIdMode" value="new" checked />
+              <div>
+                <strong>分配新 ID（推荐）</strong>
+                <span>安全导入，不会与本机冲突</span>
+              </div>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="importIdMode" value="keep" />
+              <div>
+                <strong>保留原 ID</strong>
+                <span>若已存在则自动备份后覆盖</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="field-label" for="importTitleInput">会话标题（可选）</label>
+          <input type="text" id="importTitleInput" class="text-input" placeholder="留空则沿用导出包原标题" />
+        </div>
+
+        <div class="form-group">
+          <label class="field-label" for="importProjectSelect">本机归属项目</label>
+          <select id="importProjectSelect" class="select-input full-width"></select>
+        </div>
+
+        <div class="modal-footer">
+          <div class="spacer"></div>
+          <button type="button" class="btn btn-secondary btn-sm" id="btnCancelImport">取消</button>
+          <button type="submit" class="btn btn-primary btn-sm" id="btnSubmitImport" disabled>确认导入</button>
         </div>
       </form>
     </div>

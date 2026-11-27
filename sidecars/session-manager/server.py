@@ -11,7 +11,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import core
 
@@ -77,6 +77,14 @@ class SessionManagerHandler(BaseHTTPRequestHandler):
             return True
         return parsed.hostname in ("127.0.0.1", "localhost")
 
+    def _read_raw_body(self, max_bytes: int = 256 * 1024 * 1024) -> bytes:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length <= 0:
+            return b""
+        if length > max_bytes:
+            raise ValueError("Upload exceeds 256 MB limit")
+        return self.rfile.read(length)
+
     def _read_json_body(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")
         if length > 2 * 1024 * 1024:
@@ -87,6 +95,7 @@ class SessionManagerHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        query = parse_qs(parsed.query)
 
         try:
             if path in ("/api/health", "/healthz"):
@@ -137,6 +146,27 @@ class SessionManagerHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, data)
                 return
 
+            # GET /api/export/<surface>/<conv_id>?include_brain=1
+            if len(parts) == 4 and parts[0] == "api" and parts[1] == "export":
+                surface, conv_id = parts[2], parts[3]
+                inc_raw = (query.get("include_brain", ["1"])[0] or "1").lower()
+                include_brain = inc_raw not in ("0", "false", "no")
+                filename, zip_bytes = core.export_session_bundle(
+                    surface, conv_id, include_brain=include_brain
+                )
+                ascii_fallback = f"session_{conv_id[:8]}.agysess.zip"
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Length", str(len(zip_bytes)))
+                self.send_header(
+                    "Content-Disposition",
+                    f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}",
+                )
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(zip_bytes)
+                return
+
             if path in ("/", "", "/index.html"):
                 self._send_file(STATIC_DIR / "index.html")
                 return
@@ -165,6 +195,33 @@ class SessionManagerHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         try:
+            if path == "/api/import/inspect":
+                raw_bytes = self._read_raw_body()
+                fname = unquote(self.headers.get("X-Filename", "") or (query.get("filename", [""])[0]))
+                res = core.inspect_import_payload(raw_bytes, filename=fname)
+                self._send_json(HTTPStatus.OK, res)
+                return
+
+            if path == "/api/import":
+                raw_bytes = self._read_raw_body()
+                target_surface = (query.get("target_surface", ["desktop"])[0] or "desktop").strip()
+                new_id_raw = (query.get("new_id", ["1"])[0] or "1").lower()
+                new_id_mode = new_id_raw not in ("0", "false", "no")
+                overwrite_raw = (query.get("overwrite", ["0"])[0] or "0").lower()
+                overwrite = overwrite_raw in ("1", "true", "yes")
+                project_id = query.get("project_id", ["outside-of-project"])[0] or "outside-of-project"
+                title = query.get("title", [""])[0] or None
+                res = core.import_session_bundle(
+                    raw_bytes=raw_bytes,
+                    target_surface=target_surface,
+                    new_id_mode=new_id_mode,
+                    title=title,
+                    project_id=project_id,
+                    overwrite=overwrite,
+                )
+                self._send_json(HTTPStatus.OK, res)
+                return
+
             body = self._read_json_body()
 
             if path == "/api/fork":
@@ -239,6 +296,12 @@ def resolve_port(cli_port: int | None) -> int:
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
     parser = argparse.ArgumentParser(description="Antigravity-fork-session Sidecar Server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=None)

@@ -42,6 +42,7 @@
     sync: '<svg class="icon" viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>',
     edit: '<svg class="icon" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>',
     copy: '<svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+    export: '<svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
   };
 
   const state = {
@@ -60,6 +61,7 @@
     forkContext: null,
     syncContext: null,
     renameContext: null,
+    importContext: { file: null, inspected: null },
   };
 
   const $ = (id) => document.getElementById(id);
@@ -398,17 +400,27 @@
     if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
   }
 
-  function fillProjectSelect(selectEl, defaultProjectId, origName = '') {
+  function formatFolderUri(uri) {
+    if (!uri) return '';
+    if (/^file:\/\/\/[A-Za-z]:/.test(uri)) {
+      return decodeURIComponent(uri.slice(8)).replace(/\//g, '\\');
+    }
+    return decodeURIComponent(uri.replace(/^file:\/\//, ''));
+  }
+
+  function fillProjectSelect(selectEl, defaultProjectId, origName = '', includeKeep = true) {
     const visibleProjects = state.projects.filter((p) => !p.is_sidecar);
-    let html = `<option value="">保持原项目 (${esc(origName || defaultProjectId || '原归属')})</option>`;
+    let html = includeKeep
+      ? `<option value="">保持原项目 (${esc(origName || defaultProjectId || '原归属')})</option>`
+      : '';
     html += visibleProjects
       .map((p) => {
-        const pathHint = p.folder_uris?.[0] ? ` · ${p.folder_uris[0].replace('file://', '')}` : '';
+        const pathHint = p.folder_uris?.[0] ? ` · ${formatFolderUri(p.folder_uris[0])}` : '';
         return `<option value="${esc(p.id)}">${esc(p.name)}${esc(pathHint)}</option>`;
       })
       .join('');
     selectEl.innerHTML = html;
-    selectEl.value = '';
+    selectEl.value = includeKeep ? '' : (defaultProjectId || 'outside-of-project');
   }
 
   function filteredSessions() {
@@ -479,6 +491,7 @@
               </div>
               <div class="session-actions">
                 ${actions}
+                <button class="msg-action" data-act="export" data-surface="${s.surface}" data-id="${s.id}" title="导出会话包">${ICONS.export}</button>
                 <button class="msg-action" data-act="rename" data-surface="${s.surface}" data-id="${s.id}" title="重命名">${ICONS.edit}</button>
               </div>
             </div>
@@ -655,6 +668,139 @@
     }
   }
 
+  async function exportSession(surface, id) {
+    toast('正在打包导出会话...');
+    try {
+      const headers = {};
+      if (sidecarToken) headers['X-Sidecar-Token'] = sidecarToken;
+      const res = await fetch(`/api/export/${surface}/${id}?include_brain=1`, { headers });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `导出失败 (${res.status})`);
+      }
+      const cd = res.headers.get('Content-Disposition') || '';
+      let filename = `session_${id.slice(0, 8)}.agysess.zip`;
+      const mStar = cd.match(/filename\*=UTF-8''([^;]+)/i);
+      const mPlain = cd.match(/filename="([^"]+)"/i);
+      if (mStar) filename = decodeURIComponent(mStar[1]);
+      else if (mPlain) filename = mPlain[1];
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toast(`已导出 ${filename}`);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  function updateImportConflictWarn() {
+    const info = state.importContext.inspected;
+    const warn = $('importExistsWarn');
+    if (!info) {
+      warn.classList.add('hidden');
+      return;
+    }
+    const target = document.querySelector('#importForm input[name="importTargetSurface"]:checked')?.value || 'desktop';
+    const idMode = document.querySelector('#importForm input[name="importIdMode"]:checked')?.value || 'new';
+    const exists = target === 'desktop' ? info.exists_in_desktop : info.exists_in_cli;
+    if (idMode === 'keep' && exists) {
+      warn.classList.remove('hidden');
+      warn.textContent = `本机目标端已存在相同 ID (${info.original_id.slice(0, 8)}) 的会话；导入时会自动备份旧版本再覆盖。`;
+    } else {
+      warn.classList.add('hidden');
+    }
+  }
+
+  function openImportModal() {
+    state.importContext = { file: null, inspected: null };
+    $('importFileInput').value = '';
+    $('importDropzoneText').innerHTML = '点击选择或拖入 <code>.agysess.zip</code> / <code>.db</code> 文件';
+    $('importInspectBanner').classList.add('hidden');
+    $('importExistsWarn').classList.add('hidden');
+    $('importTitleInput').value = '';
+    $('btnSubmitImport').disabled = true;
+    fillProjectSelect($('importProjectSelect'), 'outside-of-project', '', false);
+    $('importModalBackdrop').classList.remove('hidden');
+  }
+
+  async function handleImportFileSelected(file) {
+    if (!file) return;
+    state.importContext = { file, inspected: null };
+    $('importDropzoneText').textContent = `正在解析 ${file.name} (${formatBytes(file.size)})...`;
+    $('btnSubmitImport').disabled = true;
+    $('importInspectBanner').classList.add('hidden');
+    $('importExistsWarn').classList.add('hidden');
+
+    try {
+      const headers = { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name) };
+      if (sidecarToken) headers['X-Sidecar-Token'] = sidecarToken;
+      const res = await fetch('/api/import/inspect', { method: 'POST', headers, body: file });
+      const info = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(info.error || `解析失败 (${res.status})`);
+
+      state.importContext.inspected = info;
+      $('importDropzoneText').textContent = `已选择：${file.name} (${formatBytes(file.size)})`;
+      $('importInspectBanner').innerHTML = `
+        <div><strong>会话：</strong>${esc(info.title || info.preview || info.original_id || file.name)}</div>
+        <div style="margin-top:3px"><strong>详情：</strong>${info.step_count} 步 · 来源 ${esc(info.source_surface)} (${esc(info.source_os)})${info.has_brain ? ' · 含脑图/附件' : ''}</div>
+      `;
+      $('importInspectBanner').classList.remove('hidden');
+      $('importTitleInput').value = info.title || '';
+      $('btnSubmitImport').disabled = false;
+      updateImportConflictWarn();
+    } catch (err) {
+      $('importDropzoneText').innerHTML = '点击选择或拖入 <code>.agysess.zip</code> / <code>.db</code> 文件';
+      toast(err.message, true);
+    }
+  }
+
+  async function submitImport(ev) {
+    ev.preventDefault();
+    const { file, inspected } = state.importContext;
+    if (!file || !inspected) return;
+    const btn = $('btnSubmitImport');
+    btn.disabled = true;
+    btn.textContent = '导入中...';
+    try {
+      const target = document.querySelector('#importForm input[name="importTargetSurface"]:checked')?.value || 'desktop';
+      const idMode = document.querySelector('#importForm input[name="importIdMode"]:checked')?.value || 'new';
+      const newId = idMode === 'new' ? '1' : '0';
+      const overwrite = idMode === 'keep' ? '1' : '0';
+      const title = $('importTitleInput').value.trim();
+      const projectId = $('importProjectSelect').value || 'outside-of-project';
+
+      const params = new URLSearchParams({
+        target_surface: target,
+        new_id: newId,
+        overwrite,
+        project_id: projectId,
+      });
+      if (title) params.set('title', title);
+
+      const headers = { 'Content-Type': 'application/octet-stream' };
+      if (sidecarToken) headers['X-Sidecar-Token'] = sidecarToken;
+      const res = await fetch(`/api/import?${params.toString()}`, { method: 'POST', headers, body: file });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `导入失败 (${res.status})`);
+
+      $('importModalBackdrop').classList.add('hidden');
+      await loadOverview(true);
+      showResultModal('导入完成', data);
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '确认导入';
+    }
+  }
+
   function showResultModal(heading, res) {
     const newId = res.new_id || res.id;
     const target = res.target_surface;
@@ -760,10 +906,28 @@
     const cur = findSession('desktop', state.currentConvId);
     if (cur) openSyncModal(cur);
   });
+  $('btnCurrentExport').addEventListener('click', () => {
+    const cur = findSession('desktop', state.currentConvId);
+    if (cur) exportSession('desktop', cur.id);
+  });
   $('btnCurrentRename').addEventListener('click', () => {
     const cur = findSession('desktop', state.currentConvId);
     if (cur) openRenameModal(cur);
   });
+  $('btnOpenImport').addEventListener('click', openImportModal);
+  $('btnCloseImportModal').addEventListener('click', () => $('importModalBackdrop').classList.add('hidden'));
+  $('btnCancelImport').addEventListener('click', () => $('importModalBackdrop').classList.add('hidden'));
+  $('importDropzone').addEventListener('click', () => $('importFileInput').click());
+  $('importFileInput').addEventListener('change', (e) => handleImportFileSelected(e.target.files?.[0]));
+  $('importDropzone').addEventListener('dragover', (e) => { e.preventDefault(); $('importDropzone').classList.add('dragover'); });
+  $('importDropzone').addEventListener('dragleave', () => $('importDropzone').classList.remove('dragover'));
+  $('importDropzone').addEventListener('drop', (e) => {
+    e.preventDefault();
+    $('importDropzone').classList.remove('dragover');
+    handleImportFileSelected(e.dataTransfer?.files?.[0]);
+  });
+  $('importForm').addEventListener('change', updateImportConflictWarn);
+  $('importForm').addEventListener('submit', submitImport);
   function handleExpandToggle(e) {
     const exp = e.target.closest('[data-toggle-expand]');
     if (!exp) return false;
@@ -833,6 +997,7 @@
     if (act === 'fork-to-desktop') return openForkModal(session, { targetSurface: 'desktop' });
     if (act === 'turns') return openTurnsDrawer(surface, id);
     if (act === 'sync') return openSyncModal(session);
+    if (act === 'export') return exportSession(surface, id);
     if (act === 'rename') return openRenameModal(session);
   });
 
@@ -884,7 +1049,7 @@
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      ['resultModalBackdrop', 'renameModalBackdrop', 'syncModalBackdrop', 'forkModalBackdrop', 'turnsBackdrop'].forEach(
+      ['resultModalBackdrop', 'importModalBackdrop', 'renameModalBackdrop', 'syncModalBackdrop', 'forkModalBackdrop', 'turnsBackdrop'].forEach(
         (id) => $(id).classList.add('hidden')
       );
       return;

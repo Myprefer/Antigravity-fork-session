@@ -14,35 +14,42 @@ Antigravity CLI（`agy`）支持 `/fork`、`/rewind` 以及从桌面端导入会
 - **当前会话按轮次 Fork**：在右侧面板查看当前会话的每轮提问与 Markdown 回复，可从任意一轮之后或之前分叉出新会话。
 - **完整 Fork 与项目切换**：克隆桌面端或 CLI 会话，支持自定义标题、修改归属项目，并直接通知桌面端刷新侧边栏。
 - **Desktop ↔ CLI 同步**：把 `~/.gemini/antigravity-cli` 中的 CLI 会话导入桌面端，或将桌面端会话同步到 CLI。
-- **自动备份与还原**：覆盖同步前自动备份旧版本，可在「备份」标签页恢复。
+- **跨设备导出与导入**：将任意会话打包导出为 `.agysess.zip`（含完整数据库快照、标题与脑图附件），在另一台 macOS / Linux / Windows 设备的面板中直接导入（也支持直接导入原始 `.db` 文件），自动重写本机项目归属与会话 ID。
+- **自动备份与还原**：覆盖同步或覆盖导入前自动备份旧版本，可在「备份」标签页恢复。
 - **零依赖**：后端仅使用 Python 3.9+ 标准库，前端为原生 HTML/CSS/JS，跟随 Antigravity 浅色/深色主题。
 
 ## 环境要求
 
-- macOS / Linux （Windows请自行适配，欢迎PR）
+- macOS / Linux / Windows
 - Python 3.9+
 - Google Antigravity Desktop（如需跨端同步，搭配 `agy` CLI 使用）
 
 ## 安装
 
+### macOS / Linux
+
 ```bash
 git clone https://github.com/Myprefer/Antigravity-fork-session.git
-cd Antigravity-fork-session/
+cd Antigravity-fork-session
 ./install.sh
 ```
 
-开发者可以使用 `./install.sh --symlink` 进行软链接安装。
+开发者可以使用 `./install.sh --symlink` 进行软链接安装。卸载：`./uninstall.sh`。
+
+### Windows (PowerShell)
+
+```powershell
+git clone https://github.com/Myprefer/Antigravity-fork-session.git
+cd Antigravity-fork-session
+.\install.ps1
+```
+
+`install.ps1` 会自动检测本机 Python 3.9+ 路径并写入插件的 `sidecar.json`。卸载：`.\uninstall.ps1`。
 
 安装后：
 
 1. 在 Antigravity 桌面端打开 **Customizations**，启用 `Antigravity-fork-session`（`antigravity-fork-session`）及其 Sidecar。
 2. 点击右侧面板右上角的 **`+`**，选择 **「会话 Fork 管理」** 打开。
-
-卸载：
-
-```bash
-./uninstall.sh
-```
 
 ## 独立运行（不安装插件）
 
