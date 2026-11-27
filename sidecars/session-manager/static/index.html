@@ -44,10 +44,6 @@
       <div class="turn-rail-tooltip hidden" id="turnRailTooltip" role="tooltip"></div>
       <div class="bottom-dock">
         <div class="bottom-dock-inner">
-          <div class="search-wrap">
-            <svg class="icon search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/></svg>
-            <input type="search" id="currentTurnsSearch" class="search-input" placeholder="筛选当前会话的提问或回复..." autocomplete="off" />
-          </div>
           <button class="btn btn-primary btn-sm" id="btnCurrentFullFork">
             <svg class="icon" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M6 9v6"/><path d="M18 9c0 6-12 3-12 9"/></svg>
             <span>完整 Fork</span>
@@ -55,6 +51,10 @@
           <button class="btn btn-ghost btn-sm" id="btnCurrentSyncCli" title="同步到 CLI">同步 CLI</button>
           <button class="btn btn-ghost btn-sm" id="btnCurrentExport" title="导出为可跨设备迁移的会话包">导出</button>
           <button class="btn btn-ghost btn-sm" id="btnCurrentRename" title="重命名">重命名</button>
+          <div class="search-wrap">
+            <svg class="icon search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/></svg>
+            <input type="search" id="currentTurnsSearch" class="search-input" placeholder="筛选当前会话的提问或回复..." autocomplete="off" />
+          </div>
         </div>
       </div>
     </section>

@@ -992,7 +992,7 @@ form .modal-footer { margin: 14px -16px -14px; }
 
 .toast-container {
   position: fixed;
-  right: 12px;
+  left: 14px;
   bottom: 58px;
   display: flex;
   flex-direction: column;
