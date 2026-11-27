@@ -146,6 +146,12 @@ class SessionManagerHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, data)
                 return
 
+            # GET /api/export/default-path/<surface>/<conv_id>
+            if len(parts) == 5 and parts[0] == "api" and parts[1] == "export" and parts[2] == "default-path":
+                surface, conv_id = parts[3], parts[4]
+                self._send_json(HTTPStatus.OK, core.default_export_info(surface, conv_id))
+                return
+
             # GET /api/export/<surface>/<conv_id>?include_brain=1
             if len(parts) == 4 and parts[0] == "api" and parts[1] == "export":
                 surface, conv_id = parts[2], parts[3]
@@ -271,6 +277,29 @@ class SessionManagerHandler(BaseHTTPRequestHandler):
             if path == "/api/backups/restore":
                 res = core.restore_backup(backup_name=body["backup_name"])
                 self._send_json(HTTPStatus.OK, res)
+                return
+
+            if path == "/api/export/pick-path":
+                chosen = core.pick_save_path_native(
+                    default_filename=body.get("default_filename", "session.agysess.zip"),
+                    default_dir=body.get("default_dir"),
+                )
+                self._send_json(HTTPStatus.OK, {"path": chosen, "cancelled": chosen is None})
+                return
+
+            if path == "/api/export/save":
+                res = core.export_session_to_path(
+                    surface=body["surface"],
+                    conv_id=body["conv_id"],
+                    dest_path=body["dest_path"],
+                    include_brain=bool(body.get("include_brain", True)),
+                )
+                self._send_json(HTTPStatus.OK, res)
+                return
+
+            if path == "/api/reveal":
+                core.reveal_in_file_manager(body["path"])
+                self._send_json(HTTPStatus.OK, {"ok": True})
                 return
 
             self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Unknown endpoint: {path}"})

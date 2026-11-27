@@ -232,6 +232,43 @@
     </div>
   </div>
 
+  <!-- Export Modal -->
+  <div class="modal-backdrop hidden" id="exportModalBackdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle">
+      <div class="modal-header">
+        <h3 id="exportModalTitle">导出会话</h3>
+        <button class="icon-btn" id="btnCloseExportModal" aria-label="关闭">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <form id="exportForm" class="modal-body">
+        <div class="callout" id="exportSummaryBanner"></div>
+
+        <div class="form-group">
+          <label class="field-label" for="exportPathInput">保存位置</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input type="text" id="exportPathInput" class="text-input" placeholder="输入保存路径或点击右侧选择..." required />
+            <button type="button" class="btn btn-secondary btn-sm" id="btnPickExportPath">选择位置…</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="check-label">
+            <input type="checkbox" id="chkExportBrain" checked />
+            <span>包含脑图与附件目录 (<code>brain/</code>)</span>
+          </label>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost btn-sm" id="btnExportBrowserDl">浏览器直接下载</button>
+          <div class="spacer"></div>
+          <button type="button" class="btn btn-secondary btn-sm" id="btnCancelExport">取消</button>
+          <button type="submit" class="btn btn-primary btn-sm" id="btnSubmitExport">导出保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Import Modal (cross-device .agysess.zip / .db) -->
   <div class="modal-backdrop hidden" id="importModalBackdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">

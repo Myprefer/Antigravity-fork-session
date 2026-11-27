@@ -7,6 +7,7 @@ import platform
 import re
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 import time
 import urllib.error
@@ -1515,6 +1516,149 @@ def export_session_bundle(
     slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "_", slug_src).strip("_")[:36] or cid[:8]
     filename = f"{slug}_{cid[:8]}.agysess.zip"
     return filename, buf.getvalue()
+
+
+def default_export_info(surface: str, conv_id: str) -> Dict[str, str]:
+    sdir = validate_surface(surface)
+    cid = validate_conv_id(conv_id)
+    src_db = sdir / "conversations" / f"{cid}.db"
+    if not src_db.exists():
+        raise FileNotFoundError(f"Session {cid} not found in {surface}")
+    ann_path = sdir / "annotations" / f"{cid}.pbtxt"
+    ann = parse_annotation_pbtxt(ann_path) if ann_path.exists() else {}
+    info = _read_db_quick_info(src_db)
+    slug_src = ann.get("title") or info.get("preview") or cid[:8]
+    slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "_", slug_src).strip("_")[:36] or cid[:8]
+    filename = f"{slug}_{cid[:8]}.agysess.zip"
+    downloads = Path.home() / "Downloads"
+    default_dir = downloads if downloads.exists() else Path.home()
+    return {
+        "filename": filename,
+        "default_dir": str(default_dir),
+        "default_path": str(default_dir / filename),
+    }
+
+
+def pick_save_path_native(default_filename: str, default_dir: Optional[str] = None) -> Optional[str]:
+    """Open a native OS Save-As dialog and return the chosen file path, or None if cancelled."""
+    safe_name = Path(default_filename or "session.agysess.zip").name
+    start_dir = Path(default_dir).expanduser() if default_dir else (Path.home() / "Downloads")
+    if not start_dir.exists():
+        start_dir = Path.home()
+    sys_name = platform.system().lower()
+
+    if sys_name == "darwin":
+        esc_name = safe_name.replace("\\", "\\\\").replace('"', '\\"')
+        esc_dir = str(start_dir).replace("\\", "\\\\").replace('"', '\\"')
+        script = (
+            f'set defaultLoc to POSIX file "{esc_dir}"\n'
+            f'set chosen to choose file name with prompt "导出 Antigravity 会话包" '
+            f'default name "{esc_name}" default location defaultLoc\n'
+            f'POSIX path of chosen'
+        )
+        proc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=180)
+        if proc.returncode != 0:
+            # User cancelled (-128) or dialog dismissed
+            return None
+        chosen = proc.stdout.strip()
+        return chosen or None
+
+    if sys_name == "windows":
+        ps_name = safe_name.replace("'", "''")
+        ps_dir = str(start_dir).replace("'", "''")
+        ps_script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$d = New-Object System.Windows.Forms.SaveFileDialog; "
+            "$d.Title = 'Export Antigravity Session'; "
+            "$d.Filter = 'Antigravity Session Bundle (*.agysess.zip)|*.agysess.zip|All Files (*.*)|*.*'; "
+            f"$d.InitialDirectory = '{ps_dir}'; "
+            f"$d.FileName = '{ps_name}'; "
+            "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.FileName }"
+        )
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-STA", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        chosen = proc.stdout.strip()
+        return chosen or None
+
+    # Linux fallback: zenity / kdialog
+    if shutil.which("zenity"):
+        proc = subprocess.run(
+            [
+                "zenity",
+                "--file-selection",
+                "--save",
+                "--confirm-overwrite",
+                "--title=导出 Antigravity 会话包",
+                f"--filename={str(start_dir / safe_name)}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        return proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else None
+    if shutil.which("kdialog"):
+        proc = subprocess.run(
+            ["kdialog", "--getsavefilename", str(start_dir / safe_name), "*.agysess.zip"],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        return proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else None
+
+    raise RuntimeError("No native file dialog available on this OS; please enter the path manually")
+
+
+def export_session_to_path(
+    surface: str,
+    conv_id: str,
+    dest_path: str,
+    include_brain: bool = True,
+) -> Dict[str, Any]:
+    """Export a session bundle directly to a user-chosen path on disk."""
+    if not dest_path or not dest_path.strip():
+        raise ValueError("Destination path is required")
+    filename, zip_bytes = export_session_bundle(surface, conv_id, include_brain=include_brain)
+    target = Path(dest_path.strip()).expanduser()
+    if target.exists() and target.is_dir():
+        target = target / filename
+    elif not target.name.lower().endswith(".zip"):
+        target = target.with_name(target.name + ".agysess.zip")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.parent / f".{target.name}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        tmp_path.write_bytes(zip_bytes)
+        _atomic_move(tmp_path, target)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+    return {
+        "path": str(target),
+        "filename": target.name,
+        "size_bytes": len(zip_bytes),
+        "include_brain": include_brain,
+    }
+
+
+def reveal_in_file_manager(path_str: str) -> None:
+    target = Path(path_str).expanduser()
+    if not target.exists():
+        raise FileNotFoundError(f"Path not found: {target}")
+    sys_name = platform.system().lower()
+    if sys_name == "darwin":
+        subprocess.Popen(["open", "-R", str(target)])
+    elif sys_name == "windows":
+        subprocess.Popen(["explorer", f"/select,{str(target)}"])
+    else:
+        opener = shutil.which("xdg-open")
+        if opener:
+            subprocess.Popen([opener, str(target.parent if target.is_file() else target)])
 
 
 def inspect_import_payload(raw_bytes: bytes, filename: str = "") -> Dict[str, Any]:

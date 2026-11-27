@@ -61,6 +61,7 @@
     forkContext: null,
     syncContext: null,
     renameContext: null,
+    exportContext: null,
     importContext: { file: null, inspected: null },
   };
 
@@ -668,12 +669,123 @@
     }
   }
 
-  async function exportSession(surface, id) {
-    toast('正在打包导出会话...');
+  async function openExportModal(session) {
+    state.exportContext = { session, defaultFilename: `session_${session.id.slice(0, 8)}.agysess.zip`, defaultDir: '' };
+    $('exportSummaryBanner').innerHTML = `
+      <div><strong>会话：</strong>${esc(session.display_title)}</div>
+      <div style="margin-top:3px"><strong>来源：</strong>${session.surface === 'desktop' ? '桌面端' : 'CLI'} · ${session.step_count} 步 · ${formatBytes(session.size_bytes)}</div>
+    `;
+    $('chkExportBrain').checked = true;
+    $('exportPathInput').value = '正在获取默认路径...';
+    $('exportModalBackdrop').classList.remove('hidden');
+
+    try {
+      const info = await api(`/api/export/default-path/${session.surface}/${session.id}`);
+      state.exportContext.defaultFilename = info.filename;
+      state.exportContext.defaultDir = info.default_dir;
+      $('exportPathInput').value = info.default_path;
+    } catch (err) {
+      $('exportPathInput').value = '';
+      toast(err.message, true);
+    }
+  }
+
+  async function pickExportPath() {
+    const ctx = state.exportContext;
+    if (!ctx) return;
+    const btn = $('btnPickExportPath');
+    btn.disabled = true;
+    btn.textContent = '选择中...';
+    try {
+      const curVal = $('exportPathInput').value.trim();
+      let defaultDir = ctx.defaultDir;
+      let defaultFilename = ctx.defaultFilename;
+      if (curVal) {
+        const sepIdx = Math.max(curVal.lastIndexOf('/'), curVal.lastIndexOf('\\'));
+        if (sepIdx > 0) {
+          defaultDir = curVal.slice(0, sepIdx);
+          const tail = curVal.slice(sepIdx + 1);
+          if (tail) defaultFilename = tail;
+        }
+      }
+      const res = await api('/api/export/pick-path', {
+        method: 'POST',
+        body: JSON.stringify({ default_filename: defaultFilename, default_dir: defaultDir }),
+      });
+      if (res.path) {
+        $('exportPathInput').value = res.path;
+      }
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '选择位置…';
+    }
+  }
+
+  async function submitExportToDisk(ev) {
+    ev.preventDefault();
+    const ctx = state.exportContext;
+    if (!ctx) return;
+    const destPath = $('exportPathInput').value.trim();
+    if (!destPath) return;
+    const btn = $('btnSubmitExport');
+    btn.disabled = true;
+    btn.textContent = '导出中...';
+    try {
+      const res = await api('/api/export/save', {
+        method: 'POST',
+        body: JSON.stringify({
+          surface: ctx.session.surface,
+          conv_id: ctx.session.id,
+          dest_path: destPath,
+          include_brain: $('chkExportBrain').checked,
+        }),
+      });
+      $('exportModalBackdrop').classList.add('hidden');
+      showExportResultModal(res);
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '导出保存';
+    }
+  }
+
+  function showExportResultModal(res) {
+    $('resultModalTitle').textContent = '导出完成';
+    $('resultModalBody').innerHTML = `
+      <div class="callout">
+        <div><strong>文件：</strong>${esc(res.filename)}</div>
+        <div style="margin-top:3px"><strong>大小：</strong>${formatBytes(res.size_bytes)}</div>
+      </div>
+      <div class="code-copy-box">
+        <code>${esc(res.path)}</code>
+        <button type="button" class="btn btn-secondary btn-sm" data-copy="${esc(res.path)}">复制</button>
+      </div>
+    `;
+    $('resultModalFooter').innerHTML = `
+      <div class="spacer"></div>
+      <button type="button" class="btn btn-secondary btn-sm" id="btnCloseRes2">关闭</button>
+      <button type="button" class="btn btn-primary btn-sm" id="btnRevealExport">打开所在位置</button>
+    `;
+    $('btnCloseRes2').onclick = () => $('resultModalBackdrop').classList.add('hidden');
+    $('btnRevealExport').onclick = async () => {
+      try {
+        await api('/api/reveal', { method: 'POST', body: JSON.stringify({ path: res.path }) });
+      } catch (err) {
+        toast(err.message, true);
+      }
+    };
+    $('resultModalBackdrop').classList.remove('hidden');
+  }
+
+  async function exportSessionBrowserDownload(surface, id, includeBrain = true) {
+    toast('正在打包下载...');
     try {
       const headers = {};
       if (sidecarToken) headers['X-Sidecar-Token'] = sidecarToken;
-      const res = await fetch(`/api/export/${surface}/${id}?include_brain=1`, { headers });
+      const res = await fetch(`/api/export/${surface}/${id}?include_brain=${includeBrain ? '1' : '0'}`, { headers });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || `导出失败 (${res.status})`);
@@ -694,7 +806,8 @@
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
-      toast(`已导出 ${filename}`);
+      $('exportModalBackdrop').classList.add('hidden');
+      toast(`已开始下载 ${filename}`);
     } catch (err) {
       toast(err.message, true);
     }
@@ -908,7 +1021,15 @@
   });
   $('btnCurrentExport').addEventListener('click', () => {
     const cur = findSession('desktop', state.currentConvId);
-    if (cur) exportSession('desktop', cur.id);
+    if (cur) openExportModal(cur);
+  });
+  $('btnCloseExportModal').addEventListener('click', () => $('exportModalBackdrop').classList.add('hidden'));
+  $('btnCancelExport').addEventListener('click', () => $('exportModalBackdrop').classList.add('hidden'));
+  $('btnPickExportPath').addEventListener('click', pickExportPath);
+  $('exportForm').addEventListener('submit', submitExportToDisk);
+  $('btnExportBrowserDl').addEventListener('click', () => {
+    const ctx = state.exportContext;
+    if (ctx) exportSessionBrowserDownload(ctx.session.surface, ctx.session.id, $('chkExportBrain').checked);
   });
   $('btnCurrentRename').addEventListener('click', () => {
     const cur = findSession('desktop', state.currentConvId);
@@ -997,7 +1118,7 @@
     if (act === 'fork-to-desktop') return openForkModal(session, { targetSurface: 'desktop' });
     if (act === 'turns') return openTurnsDrawer(surface, id);
     if (act === 'sync') return openSyncModal(session);
-    if (act === 'export') return exportSession(surface, id);
+    if (act === 'export') return openExportModal(session);
     if (act === 'rename') return openRenameModal(session);
   });
 
@@ -1049,7 +1170,7 @@
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      ['resultModalBackdrop', 'importModalBackdrop', 'renameModalBackdrop', 'syncModalBackdrop', 'forkModalBackdrop', 'turnsBackdrop'].forEach(
+      ['resultModalBackdrop', 'exportModalBackdrop', 'importModalBackdrop', 'renameModalBackdrop', 'syncModalBackdrop', 'forkModalBackdrop', 'turnsBackdrop'].forEach(
         (id) => $(id).classList.add('hidden')
       );
       return;
